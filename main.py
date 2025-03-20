@@ -1,32 +1,58 @@
-from typing import Union
+from typing import Union, Dict, Any
 from fastapi import FastAPI
 from agno.agent import Agent
 from agno.models.google import Gemini
-from agno.tools.duckduckgo import DuckDuckGoTools
-from agno.tools.youtube import YouTubeTools
 from dotenv import load_dotenv
 import os
+from tavily import TavilyClient
+from agno.tools.tavily import TavilyTools
+from agno.tools.youtube import YouTubeTools
 
 load_dotenv()
 
-google_api_key = os.getenv('GOOGLE_API_KEY')
+tavily_api_key = os.getenv('TAVILY_API_KEY')
+if not tavily_api_key:
+    raise ValueError("TAVILY_API_KEY environment variable is not set")
+
+youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+if not youtube_api_key:
+    raise ValueError("YOUTUBE_API_KEY environment variable is not set")
+
+tavily_client = TavilyClient(api_key=tavily_api_key)
+
 app = FastAPI()
+
+search_agent = Agent(
+    model=Gemini(id="gemini-1.5-flash"),
+    tools=[TavilyTools(api_key=tavily_api_key)],
+    instructions="""You are a search agent. Use the Tavily search tool to find relevant blogs for the given query.""",
+    show_tool_calls=True,
+    markdown=True,
+)
+
+youtube_agent = Agent(
+    model=Gemini(id="gemini-1.5-flash"),
+    tools=[YouTubeTools()],  
+    instructions="""You are a YouTube agent. Use the YouTube search tool to find relevant videos for the given query.""",
+    show_tool_calls=True,
+    markdown=True,
+)
 
 gemini_agent = Agent(
     model=Gemini(id="gemini-1.5-flash"),
-    instructions="""Create a structured learning roadmap  based on topic with 7-8 steps . Each step should include:
+    instructions="""Create a structured learning roadmap based on a topic with 7-8 steps. Each step should include:
     - A title
     - Duration (e.g., "4 hours")
     - A brief description
     - Learning resources: [Title](URL)
     - Practice exercises
     - **Validated Resources**:
-      - GitHub Repositories: ${resources.github.map((url) => `- [Explore Here](url).join("\n")}
-      - Blog Articles: ${resources.blogs.map((url:any) => `- [Read Here](url)`).join("\n")}
-    
+      - GitHub Repositories: List valid GitHub repositories.
+      - Blog Articles: List valid blogs.
+
     IMPORTANT: Return ONLY a raw JSON object without any markdown formatting, code blocks, or backticks.
     The response must start with { and end with } and be valid JSON.
-    
+
     Example format:
     {
       "steps": [
@@ -46,30 +72,47 @@ gemini_agent = Agent(
     markdown=True,
 )
 
-yt_agent = Agent(
-    model=Gemini(id="gemini-1.5-flash"),
-    tools=[YouTubeTools(get_video_data=True)],
-    show_tool_calls=True,
-    description="You are a YouTube search agent. Always call the YouTube search tool to return video links for the given query. If you cannot find results, say 'No results found' but DO NOT generate text responses.",
-)
-
-
-duckduckgo_agent = Agent(
-    model=Gemini(id="gemini-1.5-flash"),
-    tools=[DuckDuckGoTools()],
-    show_tool_calls=True,
-    description="You are a DuckDuckGo agent. that gives blog link from dev, medium, hashnode based on user input ",
-)
-
 agent_team = Agent(
     model=Gemini(id="gemini-1.5-flash"),
-    tools=[gemini_agent, duckduckgo_agent, yt_agent],  # Include yt_agent
+    team=[search_agent, youtube_agent, gemini_agent],
     show_tool_calls=True,
-    description="You are a team of agents that work together to provide a complete learning experience with YouTube video links, blog links, and a learning path.",
+    instructions="""Create a structured learning roadmap based on a topic with 7-8 steps. Each step should include:
+    - A title
+    - Duration (e.g., "4 hours")
+    - A brief description
+    - Learning resources: [Title](URL)
+    - Practice exercises
+    - **Validated Resources**:
+      - GitHub Repositories: List valid GitHub repositories.
+      - Blog Articles: List valid blogs.
+
+    IMPORTANT: Return ONLY a raw JSON object without any markdown formatting, code blocks, or backticks.
+    The response must start with { and end with } and be valid JSON.
+
+    Example format:
+    {
+      "steps": [
+        {
+          "id": "1",
+          "title": "Step title",
+          "duration": "X hours",
+          "description": "What will be learned",
+          "resources": ["Resource: [Title](URL) - Description"],
+          "practice": ["Practice exercise: Description"]
+        }
+      ]
+    }""",
+    description="You are a team of agents that work together to provide a complete learning experience with YouTube video links, blog links, Tavily web search, and a learning path. Check for broken links and provide valid resources.",
     markdown=True,
+    add_datetime_to_instructions=True,
 )
 
+youtube_agent.print_response("next js")
 
-# agent.print_response("tutorial on nextjs")
-yt_agent.print_response("beginer next js tutorials on routing", stream=True)
+
+@app.get("/roadmap/{topic}")
+async def get_roadmap(topic: str):
+    response = agent_team.run(topic)
+    return response
+
 
